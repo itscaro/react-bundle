@@ -99,29 +99,30 @@ abstract class ServerAbstract extends ContainerAwareCommand
 
             if ($useSupervisor) {
                 $isGoingToTerminate = false;
-                pcntl_signal(SIGTERM, function ($signo) use ($output, &$childrenPid, &$isGoingToTerminate) {
-                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
+                pcntl_signal(SIGTERM, function ($signo) use ($input, $output, &$childrenPid, &$isGoingToTerminate) {
+                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid(), OutputInterface::VERBOSITY_DEBUG);
                     switch ($signo) {
                         case SIGTERM:
                             $isGoingToTerminate = true;
                             foreach ($childrenPid as $pid => $config) {
-                                posix_kill($pid, SIGTERM);
+                                $this->_stop($input, $output, $config['host'], [$config['port']]);
                                 unset($childrenPid[$pid]);
                             }
                             exit(0);
                     }
                 });
 
-                while (($exittedPid = pcntl_waitpid(0, $status, WNOHANG)) == 0) {
+                while (true) {
+                    $exittedPid = pcntl_waitpid(0, $status, WNOHANG);
                     if ($exittedPid > 0) {
                         $exitCode = pcntl_wexitstatus($status);
                         if ($exitCode == 0) {
                             $output->writeln("Child $exittedPid was exited correctly");
-                            if (!$isGoingToTerminate) {
-                                $this->_fork($input, $output, $childrenPid, $childrenPid[$exittedPid]['host'], [$childrenPid[$exittedPid]['port']], $useSupervisor);
-                            }
                         } else {
                             $output->writeln("Child $exittedPid was not exited correctly, exit code was: " . $exitCode);
+                        }
+                        if (!$isGoingToTerminate) {
+                            $this->_fork($input, $output, $childrenPid, $childrenPid[$exittedPid]['host'], [$childrenPid[$exittedPid]['port']], $useSupervisor);
                         }
                         unset($childrenPid[$exittedPid]);
                         $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
@@ -150,20 +151,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
             return $return;
         }
 
-        foreach ($ports as $port) {
-            $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
-
-            if (!file_exists($lock_file)) {
-                $output->writeln(vsprintf('<info>Server on port %s:%s is not running.</info>', [$host, $port]));
-                return 1;
-            }
-
-            $server_pid = file_get_contents($lock_file);
-            posix_kill($server_pid, SIGTERM);
-            unlink($lock_file);
-
-            $output->writeln(vsprintf('<info>Server on port %s:%s stopped.</info>', [$host, $port]));
-        }
+        $this->_stop($input, $output, $host, $ports);
 
         return 0;
     }
@@ -222,6 +210,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
             if ($pid > 0) {
                 // Parent proccess
                 $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
+                $output->writeln("PID file: {$lock_file}", OutputInterface::VERBOSITY_DEBUG);
                 file_put_contents($lock_file, $pid);
                 $childrenPid[$pid] = [
                     'host' => $host,
@@ -232,7 +221,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
                 $return = 10;
             } else {
                 pcntl_signal(SIGTERM, function ($signo) use ($output) {
-                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
+                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid(), OutputInterface::VERBOSITY_DEBUG);
                     switch ($signo) {
                         case SIGTERM:
                             exit(0);
@@ -255,6 +244,35 @@ abstract class ServerAbstract extends ContainerAwareCommand
                     ->build()
                     ->run();
             }
+        }
+
+        return $return;
+    }
+
+    /**
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @param $host
+     * @param array $ports
+     * @return int
+     */
+    private function _stop(InputInterface $input, OutputInterface $output, $host, array $ports)
+    {
+        $return = 0;
+
+        foreach ($ports as $port) {
+            $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
+
+            if (!file_exists($lock_file)) {
+                $output->writeln(vsprintf('<info>Server on port %s:%s is not running.</info>', [$host, $port]));
+                $return = 1;
+            }
+
+            $server_pid = file_get_contents($lock_file);
+            posix_kill($server_pid, SIGTERM);
+            unlink($lock_file);
+
+            $output->writeln(vsprintf('<info>Server on port %s:%s stopped.</info>', [$host, $port]));
         }
 
         return $return;
