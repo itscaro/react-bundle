@@ -94,19 +94,40 @@ abstract class ServerAbstract extends ContainerAwareCommand
         }
 
         // Supervision in parent process
-        if ($useSupervisor && $parentPid > 0) {
+        if ($parentPid == posix_getpid()) {
             $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
-            while (true) {
-                while (($exittedPid = pcntl_waitpid(0, $status)) != -1) {
-                    $exitCode = pcntl_wexitstatus($status);
-                    if ($exitCode == 0) {
-                        $output->writeln("Child $exittedPid was exited correctly");
-                        $this->_fork($input, $output, $childrenPid, $childrenPid[$exittedPid]['host'], [$childrenPid[$exittedPid]['port']], $useSupervisor);
-                    } else {
-                        $output->writeln("Child $exittedPid was not exited correctly, exit code was: " . $exitCode);
+
+            if ($useSupervisor) {
+                $isGoingToTerminate = false;
+                pcntl_signal(SIGTERM, function ($signo) use ($output, &$childrenPid, &$isGoingToTerminate) {
+                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
+                    switch ($signo) {
+                        case SIGTERM:
+                            $isGoingToTerminate = true;
+                            foreach ($childrenPid as $pid => $config) {
+                                posix_kill($pid, SIGTERM);
+                                unset($childrenPid[$pid]);
+                            }
+                            exit(0);
                     }
-                    unset($childrenPid[$exittedPid]);
-                    $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
+                });
+
+                while (($exittedPid = pcntl_waitpid(0, $status, WNOHANG)) == 0) {
+                    if ($exittedPid > 0) {
+                        $exitCode = pcntl_wexitstatus($status);
+                        if ($exitCode == 0) {
+                            $output->writeln("Child $exittedPid was exited correctly");
+                            if (!$isGoingToTerminate) {
+                                $this->_fork($input, $output, $childrenPid, $childrenPid[$exittedPid]['host'], [$childrenPid[$exittedPid]['port']], $useSupervisor);
+                            }
+                        } else {
+                            $output->writeln("Child $exittedPid was not exited correctly, exit code was: " . $exitCode);
+                        }
+                        unset($childrenPid[$exittedPid]);
+                        $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
+                    }
+                    pcntl_signal_dispatch();
+                    sleep(1);
                 }
             }
         }
@@ -193,7 +214,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
      * @param $useSupervisor
      * @return int
      */
-    private function _fork(InputInterface $input, OutputInterface $output, array &$childrenPid,  $host, array $ports, $useSupervisor)
+    private function _fork(InputInterface $input, OutputInterface $output, array &$childrenPid, $host, array $ports, $useSupervisor)
     {
         $return = 0;
         foreach ($ports as $port) {
@@ -215,7 +236,6 @@ abstract class ServerAbstract extends ContainerAwareCommand
                     switch ($signo) {
                         case SIGTERM:
                             exit(0);
-                            break;
                     }
                 });
 
