@@ -100,7 +100,8 @@ abstract class ServerAbstract extends ContainerAwareCommand
             if ($useSupervisor) {
                 $isGoingToTerminate = false;
                 pcntl_signal(SIGTERM, function ($signo) use ($input, $output, &$childrenPid, &$isGoingToTerminate) {
-                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid(), OutputInterface::VERBOSITY_DEBUG);
+                    $output->getVerbosity() < OutputInterface::VERBOSITY_VERBOSE ?:
+                        $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
                     switch ($signo) {
                         case SIGTERM:
                             $isGoingToTerminate = true;
@@ -210,7 +211,8 @@ abstract class ServerAbstract extends ContainerAwareCommand
             if ($pid > 0) {
                 // Parent proccess
                 $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
-                $output->writeln("PID file: {$lock_file}", OutputInterface::VERBOSITY_DEBUG);
+                $output->getVerbosity() < OutputInterface::VERBOSITY_VERBOSE ?:
+                    $output->writeln("PID file: {$lock_file}", OutputInterface::VERBOSITY_DEBUG);
                 file_put_contents($lock_file, $pid);
                 $childrenPid[$pid] = [
                     'host' => $host,
@@ -221,7 +223,8 @@ abstract class ServerAbstract extends ContainerAwareCommand
                 $return = 10;
             } else {
                 pcntl_signal(SIGTERM, function ($signo) use ($output) {
-                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid(), OutputInterface::VERBOSITY_DEBUG);
+                    $output->getVerbosity() < OutputInterface::VERBOSITY_VERBOSE ?:
+                        $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
                     switch ($signo) {
                         case SIGTERM:
                             exit(0);
