@@ -15,7 +15,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
     const OPT_HOST = 'host';
     const OPT_PORT = 'port';
     const OPT_LISTEN = 'listen';
-    const OPT_SESSIONLEADER = 'sessionleader';
+    const OPT_SUPERVISOR = 'supervisor';
 
     protected function configure()
     {
@@ -45,16 +45,16 @@ abstract class ServerAbstract extends ContainerAwareCommand
             )
             ->addOption(
                 self::OPT_PORT,
-                'p',
+                substr(self::OPT_PORT, 0, 1),
                 InputOption::VALUE_OPTIONAL,
                 'Port where server will be listening, use comma to separate ports',
                 1337
             )->addOption(
-                self::OPT_SESSIONLEADER,
+                self::OPT_SUPERVISOR,
                 '',
                 InputOption::VALUE_OPTIONAL,
-                'Promote forked processes to session leader',
-                true
+                'Activate the supervision in main process, any child exited will be recreated',
+                false
             );
     }
 
@@ -65,6 +65,8 @@ abstract class ServerAbstract extends ContainerAwareCommand
      */
     protected function start(InputInterface $input, OutputInterface $output)
     {
+        declare(ticks = 1);
+
         $return = 0;
 
         if (!extension_loaded('pcntl')) {
@@ -74,7 +76,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
 
         $host = $input->getOption(self::OPT_HOST);
         $ports = explode(',', $input->getOption(self::OPT_PORT));
-        $sessionleader = filter_var($input->getOption('sessionleader'), FILTER_VALIDATE_BOOLEAN);
+        $useSupervisor = filter_var($input->getOption(self::OPT_SUPERVISOR), FILTER_VALIDATE_BOOLEAN);
 
         // Parent process
         $return = $this->_setUidGid($input, $output);
@@ -82,31 +84,30 @@ abstract class ServerAbstract extends ContainerAwareCommand
             return $return;
         }
 
+        $parentPid = posix_getpid();
+        $childrenPid = [];
+
         // Fork
-        foreach($ports as $port) {
-            $pid = pcntl_fork();
-            if ($pid > 0) {
-                $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
-                file_put_contents($lock_file, $pid);
-            } elseif ($pid < 0) {
-                $output->writeln('<error>Child process could not be started. Server is not running.</error>');
-                $return = 10;
-            } else {
-                // Child process
-                if ($sessionleader && posix_setsid() < 0) {
-                    $output->writeln('<error>Unable to set the child process as session leader</error>');
+        $return = $this->_fork($input, $output, $parentPid, $childrenPid, $host, $ports, $useSupervisor);
+        if ($return > 0) {
+            return $return;
+        }
+
+        // Supervision in parent process
+        if ($useSupervisor && $parentPid > 0) {
+            $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
+            while (true) {
+                while (($exittedPid = pcntl_waitpid(0, $status)) != -1) {
+                    $exitCode = pcntl_wexitstatus($status);
+                    if ($exitCode == 0) {
+                        $output->writeln("Child $exittedPid was exited correctly");
+                        $this->_fork($input, $output, $childrenPid, $childrenPid[$exittedPid]['host'], [$childrenPid[$exittedPid]['port']], $useSupervisor);
+                    } else {
+                        $output->writeln("Child $exittedPid was not exited correctly, exit code was: " . $exitCode);
+                    }
+                    unset($childrenPid[$exittedPid]);
+                    $output->writeln(sprintf("My PID: %s. Children PID: %s", $parentPid, implode(' ', array_keys($childrenPid))));
                 }
-
-                $output->writeln(vsprintf('<info>Server running on port %s:%s.</info>', [$host, $port]));
-
-                $server = new Server($this->getContainer()->getParameter('kernel.root_dir'), $host, $port);
-                $server
-                    ->setEnv($this->getContainer()->getParameter('kernel.environment'))
-                    ->setStandalone($input->getOption('standalone'))
-                    ->setApc($input->getOption('apc'))
-                    ->setCache($input->getOption('cache'))
-                    ->build()
-                    ->run();
             }
         }
 
@@ -128,7 +129,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
             return $return;
         }
 
-        foreach($ports as $port) {
+        foreach ($ports as $port) {
             $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
 
             if (!file_exists($lock_file)) {
@@ -181,5 +182,61 @@ abstract class ServerAbstract extends ContainerAwareCommand
         }
 
         return 0;
+    }
+
+    /**
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @param array $childrenPid
+     * @param $host
+     * @param array $ports
+     * @param $useSupervisor
+     * @return int
+     */
+    private function _fork(InputInterface $input, OutputInterface $output, array &$childrenPid,  $host, array $ports, $useSupervisor)
+    {
+        $return = 0;
+        foreach ($ports as $port) {
+            $pid = pcntl_fork();
+            if ($pid > 0) {
+                // Parent proccess
+                $lock_file = sys_get_temp_dir() . '/react-' . $host . '-' . $port . '.pid';
+                file_put_contents($lock_file, $pid);
+                $childrenPid[$pid] = [
+                    'host' => $host,
+                    'port' => $port,
+                ];
+            } elseif ($pid < 0) {
+                $output->writeln('<error>Child process could not be started. Server is not running.</error>');
+                $return = 10;
+            } else {
+                pcntl_signal(SIGTERM, function ($signo) use ($output) {
+                    $output->writeln("> Received signal {$signo} : my PID " . posix_getpid());
+                    switch ($signo) {
+                        case SIGTERM:
+                            exit(0);
+                            break;
+                    }
+                });
+
+                // Child process
+                if (!$useSupervisor && posix_setsid() < 0) {
+                    $output->writeln('<error>Unable to set the child process as session leader</error>');
+                }
+
+                $output->writeln(vsprintf('<info>Server running on port %s:%s.</info>', [$host, $port]));
+
+                $server = new Server($this->getContainer()->getParameter('kernel.root_dir'), $host, $port);
+                $server
+                    ->setEnv($this->getContainer()->getParameter('kernel.environment'))
+                    ->setStandalone($input->getOption('standalone'))
+                    ->setApc($input->getOption('apc'))
+                    ->setCache($input->getOption('cache'))
+                    ->build()
+                    ->run();
+            }
+        }
+
+        return $return;
     }
 }
