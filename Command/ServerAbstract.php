@@ -88,7 +88,7 @@ abstract class ServerAbstract extends ContainerAwareCommand
         $childrenPid = [];
 
         // Fork
-        $return = $this->_fork($input, $output, $parentPid, $childrenPid, $host, $ports, $useSupervisor);
+        $return = $this->_fork($input, $output, $childrenPid, $host, $ports, $useSupervisor);
         if ($return > 0) {
             return $return;
         }
