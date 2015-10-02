@@ -165,6 +165,8 @@ abstract class ServerAbstract extends ContainerAwareCommand
      */
     private function _setUidGid(InputInterface $input, OutputInterface $output)
     {
+        $return = 0;
+
         $user = $input->getOption(self::OPT_USER);
         $group = $input->getOption(self::OPT_GROUP);
 
@@ -172,8 +174,14 @@ abstract class ServerAbstract extends ContainerAwareCommand
             $_user = posix_getpwnam($user);
             if ($_user === false) {
                 $output->writeln("<error>User {$user} cannot be found on this system.</error>");
-                return 2;
+                $return = 2;
             } else {
+                // TODO check needed, logs dir should not be done like this!!!
+                if (`which chown`) {
+                    system("chown -R {$user}" . realpath($this->getContainer()->getParameter('kernel.cache_dir') .
+                            DIRECTORY_SEPARATOR . $this->getContainer()->getParameter('kernel.environment')));
+                    system("chown -R {$user}" . realpath($this->getContainer()->getParameter('kernel.logs_dir')));
+                }
                 if (!posix_setuid($_user["uid"])) {
                     $output->writeln("<error>Could not set user {$user} as UID.</error>");
                 }
@@ -184,14 +192,21 @@ abstract class ServerAbstract extends ContainerAwareCommand
             $_group = posix_getgrnam($group);
             if ($_group === false) {
                 $output->writeln("<error>Group {$group} cannot be found on this system.</error>");
-                return 2;
-            }
-            if (!posix_setgid($_group["gid"])) {
-                $output->writeln("<error>Could not set group {$group} as GID.</error>");
+                $return = 2;
+            } else {
+                // TODO check needed, logs dir should not be done like this!!!
+                if (`which chgrp`) {
+                    system("chgrp -R {$user}" . realpath($this->getContainer()->getParameter('kernel.cache_dir') .
+                            DIRECTORY_SEPARATOR . $this->getContainer()->getParameter('kernel.environment')));
+                    system("chgrp -R {$user}" . realpath($this->getContainer()->getParameter('kernel.logs_dir')));
+                }
+                if (!posix_setgid($_group["gid"])) {
+                    $output->writeln("<error>Could not set group {$group} as GID.</error>");
+                }
             }
         }
 
-        return 0;
+        return $return;
     }
 
     /**
