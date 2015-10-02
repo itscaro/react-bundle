@@ -58,6 +58,16 @@ class Server {
         $kernel = new ReactKernel($this->env, $this->env === 'dev' ? true : false);
 
         $this->loop = Factory::create();
+        // TODO make config for this part
+        if (class_exists('\Doctrine\DBAL\Driver\PingableConnection')) {
+            $this->loop->addPeriodicTimer(15, function () use ($kernel) {
+                foreach ($kernel->getContainer()->get('doctrine')->getConnections() as $connection) {
+                        if ($connection instanceof \Doctrine\DBAL\Driver\PingableConnection) {
+                            $connection->ping();
+                        }
+                    }
+            });
+        }
         $this->socket = new SocketServer($this->loop);
         $http = new HttpServer($this->socket, $this->loop);
         $http->on('request', $this->handleRequest($kernel));
@@ -91,7 +101,7 @@ class Server {
                 if ($request->getPath() !== '/' && file_exists($file)) {
                     $response->writeHead(200, array(
                         'Content-Type' => $this->getFileMimeType($file),
-                        'Content-Length' => filesize($file)
+                        'Content-Length' => filesize($file),
                     ));
                     $response->end(file_get_contents($file));
                 } else {
